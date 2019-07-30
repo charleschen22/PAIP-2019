@@ -70,7 +70,7 @@ def save_masks(slides_dir, id_list, display_level=2):
 if __name__ ==  '__main__':
     id_list = get_id_list('./data/OriginalImage')
     for i in len(id_list):
-        slide_combine_mask('./data/My_masks_level_1', id_list, i, display_level=1):
+        slide_combine_mask('./data/My_masks_level_1', id_list, i, display_level=1)
 
 
 
