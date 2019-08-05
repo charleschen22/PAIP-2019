@@ -1,3 +1,8 @@
+# coding: utf-8
+
+# In[ ]:
+
+
 from scipy.misc import imsave
 import os
 import numpy as np
@@ -16,7 +21,15 @@ from skimage import io
 from keras.utils.np_utils import to_categorical
 from pydaily import filesystem
 from datetime import datetime
+import tensorflow as tf
+import staintools
+import keras.backend.tensorflow_backend as KTF
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "6, 7"
+config = tf.ConfigProto()
+config.gpu_options.per_process_gpu_memory_fraction = 0.8
+sess = tf.Session(config=config)
+KTF.set_session(sess)
 
 def get_id_list(slides_dir):
     id_list = []
@@ -25,6 +38,7 @@ def get_id_list(slides_dir):
     SVS_file_list = filesystem.find_ext_files(slides_dir, "SVS")
     id_list.extend([os.path.basename(ele) for ele in SVS_file_list])
     ids = [os.path.splitext(ele)[0] for ele in id_list]
+
     return ids
 
 
@@ -39,7 +53,7 @@ def sequential_crop(img_id, start, crop_size):
         slide_path = './data/OriginalImage/' + str(img_id) + '.SVS'
     slide = openslide.open_slide(slide_path)
     croped_slide_img = slide.read_region((start_x, start_y), 0, crop_size)
-    croped_slide_img = np.array(croped_slide_img)
+    croped_slide_img = np.array(croped_slide_img)#[:, :, 0:3]
     mask_path = './data/ViableMask/' + str(img_id) + '_viable.tif'
     mask = io.imread(mask_path)
     croped_mask_img = mask[start_x:start_x+crop_size[0], start_y:start_y+crop_size[1]]
@@ -90,11 +104,13 @@ while i < len(id_list):
 sample_total.to_csv('./data/coordinates.csv')
 '''
 
-def gen_imgs(samples, batch_size, shuffle=True):
+def gen_imgs(samples, batch_size, shuffle=True, color_norm=True, target="./data/svs_patches/01_01_0091_12800_22528.png"):
 
     save_svs_patches = './data/svs_patches'
     save_viable_patches = './data/viable_patches'
     num_samples = len(samples)
+    target = staintools.read_image(target)
+
     while 1:
         if shuffle:
             samples = samples.sample(frac=1)
@@ -114,6 +130,13 @@ def gen_imgs(samples, batch_size, shuffle=True):
                 cor2 = int(y_list[i])
                 slide_patch, mask_patch = sequential_crop(a, (cor1, cor2), (512, 512))[0:2]
 
+                if color_norm:
+                    target = staintools.LuminosityStandardizer.standardize(target)
+                    slide_patch = staintools.LuminosityStandardizer.standardize(slide_patch)
+                    normalizer = staintools.StainNormalizer(method='vahadane')
+                    normalizer.fit(target)
+                    slide_patch = normalizer.transform(slide_patch)
+
                 if not os.path.exists(save_svs_patches):
                     os.mkdir(save_svs_patches)
                 imsave(osp.join(save_svs_patches, str(a) + '_' + str(cor1) + '_' + str(cor2) + '.png'), slide_patch)
@@ -121,6 +144,7 @@ def gen_imgs(samples, batch_size, shuffle=True):
                     os.mkdir(save_viable_patches)
                 imsave(osp.join(save_viable_patches, str(a) + '_' + str(cor1) + '_' + str(cor2) + '_viable.png'), mask_patch)
 
+                #mask_patch = np.resize(mask_patch, [512, 512, 1])
                 images.append(slide_patch)
                 masks.append(mask_patch)
 
@@ -128,7 +152,9 @@ def gen_imgs(samples, batch_size, shuffle=True):
 
                 X_train = np.array(images)
                 y_train = np.array(masks)
-                print()
+                y_train = to_categorical(y_train, num_classes=2).reshape(y_train.shape[0], 512, 512, 2)
+                print(np.shape(X_train))
+                print(np.shape(y_train))
 
             yield X_train, y_train
 
@@ -225,15 +251,12 @@ model_checkpoint = ModelCheckpoint(filepath, monitor='loss',verbose=1, save_best
 
 from datetime import datetime
 
-train_generator = gen_imgs(train_samples, BATCH_SIZE)
-validation_generator = gen_imgs(valid_samples, BATCH_SIZE)
-
 # Train model
 train_start_time = datetime.now()
-model.fit_generator(train_generator, np.ceil(len(train_index) / BATCH_SIZE),
-    validation_data=validation_generator,
+model.fit_generator(gen_imgs(train_samples, BATCH_SIZE, color_norm=False), np.ceil(len(train_index) / BATCH_SIZE),
+    validation_data=gen_imgs(valid_index, BATCH_SIZE, color_norm=False),
     validation_steps=np.ceil(len(valid_index) / BATCH_SIZE),
-    epochs=N_EPOCHS, callbacks=[model_checkpoint])
+    epochs=N_EPOCHS)
 
 train_end_time = datetime.now()
 print("Model training time: %.1f minutes" % ((train_end_time - train_start_time).seconds / 60,))
